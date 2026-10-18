@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from .. import __version__
+from ..core import presets, sync
+from ..core.connectors.base import ConnectorError
 from ..store import repo
 from .deps import require_token
 
@@ -17,6 +19,9 @@ class AccountIn(BaseModel):
     email: str
     auth_code: str = ""
     display_name: str | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
+    verify: bool = True
 
 
 class SettingsIn(BaseModel):
@@ -121,10 +126,45 @@ def accounts() -> list[dict]:
     return repo.list_accounts()
 
 
+@router.post("/accounts/test")
+def test_account_draft(payload: AccountIn) -> dict:
+    email = payload.email.strip().lower()
+    provider_key = presets.detect_provider(email)
+    try:
+        return sync.test_account(
+            email,
+            payload.auth_code,
+            provider_key,
+            payload.imap_host,
+            payload.imap_port,
+        )
+    except ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/accounts", status_code=201)
 def create_account(payload: AccountIn) -> dict:
     try:
-        return repo.add_account(payload.email, payload.auth_code, payload.display_name)
+        if payload.verify:
+            provider_key = presets.detect_provider(payload.email.strip().lower())
+            sync.test_account(
+                payload.email.strip().lower(),
+                payload.auth_code,
+                provider_key,
+                payload.imap_host,
+                payload.imap_port,
+            )
+        return repo.add_account(
+            payload.email,
+            payload.auth_code,
+            payload.display_name,
+            payload.imap_host,
+            payload.imap_port,
+        )
+    except ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -137,11 +177,47 @@ def remove_account(account_id: str) -> dict:
 
 @router.post("/accounts/{account_id}/test")
 def test_account(account_id: str) -> dict:
-    repo.public_account(account_id)
-    return {
-        "ok": True,
-        "message": "M0 骨架：账户已记录。真实 IMAP 连接校验将在 M1 接入。",
-    }
+    account = repo.get_account_raw(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    if str(account_id).startswith("demo"):
+        return {"ok": False, "message": "演示账户不连接真实邮箱"}
+
+    password = repo.secret_store().get(repo.SECRET_ACCOUNT_PREFIX + account_id)
+    if not password:
+        raise HTTPException(status_code=400, detail="未找到授权码，请重新添加邮箱")
+
+    try:
+        result = sync.test_account(
+            account["email"],
+            password,
+            account["provider"],
+            account.get("imap_host"),
+            account.get("imap_port"),
+        )
+        result["message"] = f"连接成功，收件箱 {result.get('messages', '?')} 封"
+        return result
+    except ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/sync")
+def sync_account(account_id: str) -> dict:
+    settings = repo.get_settings()
+    return sync.sync_account(
+        account_id,
+        since_days=settings["scan_since_days"],
+    )
+
+
+@router.get("/messages")
+def messages(
+    limit: int = Query(default=50, ge=1, le=500),
+    account_id: str | None = Query(default=None),
+) -> list[dict]:
+    return repo.recent_messages(limit=limit, account_id=account_id)
 
 
 @router.get("/settings")
@@ -155,8 +231,9 @@ def save_settings(payload: SettingsIn) -> dict:
 
 
 @router.post("/sync")
-def sync() -> dict:
-    return repo.sync_mock()
+def sync_all() -> dict:
+    settings = repo.get_settings()
+    return sync.sync_all(since_days=settings["scan_since_days"])
 
 
 @router.post("/demo/reset")

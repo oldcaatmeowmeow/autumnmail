@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     provider      TEXT NOT NULL,
     auth_type     TEXT NOT NULL,
     display_name  TEXT,
+    imap_host     TEXT,
+    imap_port     INTEGER,
     scan_since    TEXT,
     last_sync_at  TEXT,
     enabled       INTEGER NOT NULL DEFAULT 1,
@@ -46,15 +48,32 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id          TEXT PRIMARY KEY,
+    id              TEXT PRIMARY KEY,
+    account_id      TEXT,
+    uid             TEXT,
+    folder          TEXT DEFAULT 'INBOX',
+    message_id      TEXT,
+    subject         TEXT,
+    from_addr       TEXT,
+    from_name       TEXT,
+    received_at     TEXT,
+    snippet         TEXT,
+    body_text       TEXT,
+    size            INTEGER DEFAULT 0,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    raw_link        TEXT,
+    synced_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sync_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id  TEXT,
-    subject     TEXT,
-    from_addr   TEXT,
-    from_name   TEXT,
-    received_at TEXT,
-    snippet     TEXT,
-    body_text   TEXT,
-    raw_link    TEXT
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    status      TEXT NOT NULL,
+    scanned     INTEGER NOT NULL DEFAULT 0,
+    inserted    INTEGER NOT NULL DEFAULT 0,
+    error       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -76,3 +95,4 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON events (event_time);
 CREATE INDEX IF NOT EXISTS idx_events_status ON events (status);
 CREATE INDEX IF NOT EXISTS idx_messages_account ON messages (account_id);
 CREATE INDEX IF NOT EXISTS idx_apps_status ON applications (status);
+-- idx_messages_uid is created by db._migrate after adding newer columns.

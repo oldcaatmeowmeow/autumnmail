@@ -46,7 +46,13 @@ async function sync() {
   syncing.value = true
   try {
     const result = await api.sync()
-    toast(result.message || '同步完成', 'success')
+    if (result.ok) {
+      toast(result.message || `同步完成：扫描 ${result.scanned} 封，新增 ${result.new} 封`, 'success')
+    } else if (result.message && (result.message.includes('还没有添加') || result.message.includes('演示账户'))) {
+      toast(result.message, 'info')
+    } else {
+      toast(result.message || '同步失败', 'error')
+    }
     await refreshBootstrap()
     store.revision += 1
   } catch (error) {

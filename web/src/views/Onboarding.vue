@@ -34,7 +34,7 @@ const providerMeta = {
   qq: { label: 'QQ 邮箱', hint: '设置 → 账户 → 开启 IMAP/SMTP 服务，生成授权码', available: true },
   163: { label: '网易邮箱', hint: '设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，获取客户端授权密码', available: true },
   outlook: { label: 'Outlook', hint: 'Outlook 将在二期（M5）通过 Microsoft Graph 支持', available: false },
-  imap: { label: '通用 IMAP', hint: '骨架阶段先支持 QQ / 163；通用 IMAP 在 M1 完善', available: true },
+  imap: { label: '通用 IMAP', hint: '当前先支持 QQ / 163；通用 IMAP 在后续完善', available: true },
 }
 
 const steps = [
@@ -64,15 +64,27 @@ async function addMailbox() {
   if (!form.email.trim()) return toast('请输入邮箱地址', 'error')
   if (!provider.value.available) return toast(provider.value.hint, 'error')
   if (providerKey.value === 'imap') {
-    return toast('当前先支持 QQ / 163，通用 IMAP 在 M1 完善', 'error')
+    return toast('当前先支持 QQ / 163，通用 IMAP 在后续完善', 'error')
   }
   if (!form.auth_code.trim()) return toast('请填写授权码（不是登录密码）', 'error')
 
   busy.value = true
   try {
-    added.value = await api.addAccount({ email: form.email, auth_code: form.auth_code })
+    const test = await api.testAccountDraft({
+      email: form.email,
+      auth_code: form.auth_code,
+    })
+    if (!test.ok) {
+      toast(test.message || '连接失败', 'error')
+      return
+    }
+    added.value = await api.addAccount({
+      email: form.email,
+      auth_code: form.auth_code,
+      verify: false,
+    })
     await refreshBootstrap()
-    toast('邮箱已添加', 'success')
+    toast(`连接成功，已添加 ${added.value.email}`, 'success')
     step.value = 2
   } catch (error) {
     toast(error.message, 'error')
@@ -209,8 +221,8 @@ async function useDemo() {
           </div>
 
           <div class="notice">
-            <AppIcon name="sparkles" :size="16" />
-            <span>M0 骨架阶段：会先记录账户并展示演示数据，真实 IMAP 拉取在 M1 接入。</span>
+            <AppIcon name="shield" :size="16" />
+            <span>添加前会测试 IMAP 连接；只读拉取，不会标记已读或删除邮件。</span>
           </div>
         </div>
 

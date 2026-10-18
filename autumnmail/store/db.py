@@ -6,6 +6,23 @@ from pathlib import Path
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 _db_path: Path | None = None
 
+# Columns added after the first release. Keep migrations additive so an
+# existing local database is never dropped or recreated.
+_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "accounts": {
+        "imap_host": "TEXT",
+        "imap_port": "INTEGER",
+    },
+    "messages": {
+        "uid": "TEXT",
+        "folder": "TEXT",
+        "message_id": "TEXT",
+        "size": "INTEGER",
+        "has_attachments": "INTEGER NOT NULL DEFAULT 0",
+        "synced_at": "TEXT",
+    },
+}
+
 
 def configure(path: str | Path) -> Path:
     global _db_path
@@ -28,10 +45,24 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDITIVE_COLUMNS.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_uid ON messages (account_id, uid)"
+    )
+
+
 def init() -> Path:
     conn = connect()
     try:
         conn.executescript(_SCHEMA_PATH.read_text("utf-8"))
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()

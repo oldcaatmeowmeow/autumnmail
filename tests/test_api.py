@@ -1,23 +1,3 @@
-from __future__ import annotations
-
-import pytest
-from fastapi.testclient import TestClient
-
-from autumnmail.server import create_app
-from autumnmail.store import repo
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTUMNMAIL_DATA_DIR", str(tmp_path))
-    repo.reset_secret_store()
-    app = create_app("test-token", dev=True)
-    with TestClient(app) as test_client:
-        test_client.headers.update({"X-App-Token": "test-token"})
-        yield test_client
-    repo.reset_secret_store()
-
-
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -29,6 +9,7 @@ def test_seed_and_bootstrap(client):
     assert data["onboarded"] is True
     assert data["demo_mode"] is True
     assert data["counts"]["applications"] == 7
+    assert data["counts"]["messages"] == 13
     assert data["review_count"] >= 1
 
 
@@ -95,15 +76,48 @@ def test_settings_and_secret(client):
 
 def test_add_account(client):
     outlook = client.post(
-        "/api/accounts", json={"email": "a@outlook.com", "auth_code": "x"}
+        "/api/accounts",
+        json={"email": "a@outlook.com", "auth_code": "x", "verify": False},
     )
     assert outlook.status_code == 400
 
     qq = client.post(
-        "/api/accounts", json={"email": "new@qq.com", "auth_code": "abc"}
+        "/api/accounts",
+        json={"email": "new@qq.com", "auth_code": "abc", "verify": False},
     )
     assert qq.status_code == 201
-    assert qq.json()["provider"] == "qq"
+    body = qq.json()
+    assert body["provider"] == "qq"
+    assert body["message_count"] == 0
+
+
+def test_demo_account_test(client):
+    response = client.post("/api/accounts/demo-account/test")
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+
+
+def test_account_test_rejects_outlook(client):
+    response = client.post(
+        "/api/accounts/test",
+        json={"email": "a@outlook.com", "auth_code": "x"},
+    )
+    assert response.status_code == 400
+    assert "二期" in response.json()["detail"]
+
+
+def test_sync_without_real_account(client):
+    response = client.post("/api/sync")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["message"] == "还没有添加真实邮箱"
+
+
+def test_messages_endpoint(client):
+    items = client.get("/api/messages").json()
+    assert items
+    assert "subject" in items[0]
 
 
 def test_event_status_update(client):

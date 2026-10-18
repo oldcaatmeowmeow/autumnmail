@@ -164,15 +164,33 @@ def list_accounts() -> list[dict]:
     conn = db.connect()
     try:
         rows = conn.execute(
-            "SELECT id, email, provider, auth_type, display_name, scan_since,"
-            " last_sync_at, enabled, created_at FROM accounts ORDER BY created_at"
+            "SELECT a.id, a.email, a.provider, a.auth_type, a.display_name,"
+            " a.imap_host, a.imap_port, a.scan_since, a.last_sync_at, a.enabled,"
+            " a.created_at,"
+            " (SELECT COUNT(*) FROM messages m WHERE m.account_id = a.id) AS message_count"
+            " FROM accounts a ORDER BY a.created_at"
         ).fetchall()
         return [_public_account(row) for row in rows]
     finally:
         conn.close()
 
 
-def add_account(email: str, auth_code: str, display_name: str | None = None) -> dict:
+def get_account_raw(account_id: str) -> dict | None:
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def add_account(
+    email: str,
+    auth_code: str,
+    display_name: str | None = None,
+    imap_host: str | None = None,
+    imap_port: int | None = None,
+) -> dict:
     email = email.strip().lower()
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         raise ValueError("邮箱地址格式不正确")
@@ -183,10 +201,14 @@ def add_account(email: str, auth_code: str, display_name: str | None = None) -> 
         raise ValueError(provider.hint)
     if provider_key in {"qq", "163"} and not auth_code.strip():
         raise ValueError("请填写邮箱授权码（不是登录密码）")
+    if provider_key == "imap" and not (imap_host or provider.imap_host):
+        raise ValueError("请填写 IMAP 服务器地址")
 
     account_id = uuid.uuid4().hex[:12]
     now = _now()
     scan_since = (datetime.now(TZ) - timedelta(days=90)).isoformat(timespec="minutes")
+    host = (imap_host or provider.imap_host or "").strip() or None
+    port = int(imap_port or provider.imap_port)
 
     conn = db.connect()
     try:
@@ -197,14 +219,17 @@ def add_account(email: str, auth_code: str, display_name: str | None = None) -> 
             raise ValueError("该邮箱已添加")
         conn.execute(
             """INSERT INTO accounts
-               (id, email, provider, auth_type, display_name, scan_since, last_sync_at, enabled, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+               (id, email, provider, auth_type, display_name, imap_host, imap_port,
+                scan_since, last_sync_at, enabled, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
             (
                 account_id,
                 email,
                 provider_key,
                 provider.auth_type,
                 display_name or provider.label,
+                host,
+                port,
                 scan_since,
                 None,
                 now,
@@ -227,8 +252,11 @@ def public_account(account_id: str) -> dict:
     conn = db.connect()
     try:
         row = conn.execute(
-            "SELECT id, email, provider, auth_type, display_name, scan_since,"
-            " last_sync_at, enabled, created_at FROM accounts WHERE id = ?",
+            "SELECT a.id, a.email, a.provider, a.auth_type, a.display_name,"
+            " a.imap_host, a.imap_port, a.scan_since, a.last_sync_at, a.enabled,"
+            " a.created_at,"
+            " (SELECT COUNT(*) FROM messages m WHERE m.account_id = a.id) AS message_count"
+            " FROM accounts a WHERE a.id = ?",
             (account_id,),
         ).fetchone()
         if not row:
@@ -242,11 +270,128 @@ def delete_account(account_id: str) -> None:
     conn = db.connect()
     try:
         conn.execute("DELETE FROM messages WHERE account_id = ?", (account_id,))
+        conn.execute("DELETE FROM sync_runs WHERE account_id = ?", (account_id,))
         conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         conn.commit()
     finally:
         conn.close()
     secret_store().delete(SECRET_ACCOUNT_PREFIX + account_id)
+
+
+def upsert_messages(account_id: str, mails) -> int:
+    """Store fetched messages. Returns the number of newly inserted rows."""
+    now = _now()
+    inserted = 0
+    conn = db.connect()
+    try:
+        for mail in mails:
+            message_key = f"{account_id}:{mail.uid}"
+            exists = conn.execute(
+                "SELECT 1 FROM messages WHERE id = ?", (message_key,)
+            ).fetchone()
+            values = (
+                mail.uid,
+                mail.folder or "INBOX",
+                mail.message_id,
+                mail.subject,
+                mail.from_addr,
+                mail.from_name,
+                mail.received_at,
+                mail.snippet,
+                mail.body_text,
+                mail.size,
+                1 if mail.has_attachments else 0,
+                now,
+            )
+            if exists:
+                conn.execute(
+                    """UPDATE messages SET uid = ?, folder = ?, message_id = ?,
+                       subject = ?, from_addr = ?, from_name = ?, received_at = ?,
+                       snippet = ?, body_text = ?, size = ?, has_attachments = ?,
+                       synced_at = ? WHERE id = ?""",
+                    values + (message_key,),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO messages
+                       (uid, folder, message_id, subject, from_addr, from_name,
+                        received_at, snippet, body_text, size, has_attachments,
+                        synced_at, id, account_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    values + (message_key, account_id),
+                )
+                inserted += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return inserted
+
+
+def mark_synced(account_id: str, when: str | None = None) -> None:
+    conn = db.connect()
+    try:
+        conn.execute(
+            "UPDATE accounts SET last_sync_at = ? WHERE id = ?",
+            (when or _now(), account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def start_sync_run(account_id: str) -> int:
+    conn = db.connect()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO sync_runs(account_id, started_at, status) VALUES (?, ?, 'running')",
+            (account_id, _now()),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def finish_sync_run(
+    run_id: int,
+    status: str,
+    scanned: int = 0,
+    inserted: int = 0,
+    error: str | None = None,
+) -> None:
+    conn = db.connect()
+    try:
+        conn.execute(
+            """UPDATE sync_runs SET finished_at = ?, status = ?, scanned = ?,
+               inserted = ?, error = ? WHERE id = ?""",
+            (_now(), status, scanned, inserted, error, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recent_messages(limit: int = 50, account_id: str | None = None) -> list[dict]:
+    sql = (
+        "SELECT id, account_id, subject, from_addr, from_name, received_at,"
+        " snippet, has_attachments FROM messages"
+    )
+    params: list = []
+    if account_id:
+        sql += " WHERE account_id = ?"
+        params.append(account_id)
+    sql += " ORDER BY received_at DESC LIMIT ?"
+    params.append(max(1, min(int(limit), 500)))
+
+    conn = db.connect()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [
+            {**dict(row), "has_attachments": bool(row["has_attachments"])}
+            for row in rows
+        ]
+    finally:
+        conn.close()
 
 
 def counts() -> dict:
@@ -258,6 +403,7 @@ def counts() -> dict:
             ).fetchone()["c"],
             "events": conn.execute("SELECT COUNT(*) AS c FROM events").fetchone()["c"],
             "accounts": conn.execute("SELECT COUNT(*) AS c FROM accounts").fetchone()["c"],
+            "messages": conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()["c"],
         }
     finally:
         conn.close()

@@ -13,6 +13,8 @@ const accounts = ref([])
 const meta = ref(null)
 const saving = ref(false)
 const adding = ref(false)
+const testing = ref(false)
+const testedCredentials = ref('')
 const showAdvanced = ref(false)
 const copied = ref(false)
 
@@ -43,7 +45,7 @@ const providerMeta = {
   qq: { label: 'QQ 邮箱', hint: '设置 → 账户 → 开启 IMAP/SMTP 服务，生成授权码', available: true },
   163: { label: '网易邮箱', hint: '设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，获取客户端授权密码', available: true },
   outlook: { label: 'Outlook', hint: 'Outlook 将在二期（M5）通过 Microsoft Graph 支持', available: false },
-  imap: { label: '通用 IMAP', hint: '骨架阶段先支持 QQ / 163；通用 IMAP 在 M1 完善', available: true },
+  imap: { label: '通用 IMAP', hint: '当前先支持 QQ / 163；通用 IMAP 在后续完善', available: true },
 }
 
 const providerKey = computed(() => {
@@ -142,14 +144,19 @@ async function addAccount() {
   if (!accountForm.email.trim()) return toast('请输入邮箱地址', 'error')
   if (!provider.value.available) return toast(provider.value.hint, 'error')
   if (providerKey.value === 'imap') {
-    return toast('通用 IMAP 将在 M1 完善，当前请使用 QQ / 163', 'error')
+    return toast('通用 IMAP 将在后续完善，当前请使用 QQ / 163', 'error')
   }
   if (!accountForm.auth_code.trim()) return toast('请填写授权码（不是登录密码）', 'error')
 
   adding.value = true
   try {
-    await api.addAccount({ ...accountForm })
+    const signature = `${accountForm.email}|${accountForm.auth_code}`
+    await api.addAccount({
+      ...accountForm,
+      verify: testedCredentials.value !== signature,
+    })
     toast('邮箱已添加', 'success')
+    testedCredentials.value = ''
     accountForm.email = ''
     accountForm.auth_code = ''
     accountForm.display_name = ''
@@ -162,10 +169,55 @@ async function addAccount() {
   }
 }
 
+async function testDraft() {
+  if (!accountForm.email.trim()) return toast('请输入邮箱地址', 'error')
+  if (!provider.value.available) return toast(provider.value.hint, 'error')
+  if (providerKey.value === 'imap') {
+    return toast('通用 IMAP 将在后续完善，当前请使用 QQ / 163', 'error')
+  }
+  if (!accountForm.auth_code.trim()) return toast('请填写授权码（不是登录密码）', 'error')
+
+  testing.value = true
+  try {
+    const result = await api.testAccountDraft({
+      email: accountForm.email,
+      auth_code: accountForm.auth_code,
+    })
+    if (result.ok) {
+      testedCredentials.value = `${accountForm.email}|${accountForm.auth_code}`
+      toast(`连接成功，收件箱 ${result.messages ?? '?'} 封`, 'success')
+    } else {
+      toast(result.message || '连接失败', 'error')
+    }
+  } catch (error) {
+    toast(error.message, 'error')
+  } finally {
+    testing.value = false
+  }
+}
+
 async function testAccount(account) {
   try {
     const result = await api.testAccount(account.id)
-    toast(result.message, 'success')
+    if (result.ok) toast(result.message || '连接成功', 'success')
+    else toast(result.message || '连接失败', 'error')
+  } catch (error) {
+    toast(error.message, 'error')
+  }
+}
+
+async function syncAccount(account) {
+  try {
+    const result = await api.syncAccount(account.id)
+    if (result.ok) toast(result.message, 'success')
+    else if (result.message && (result.message.includes('还没有添加') || result.message.includes('演示账户'))) {
+      toast(result.message, 'info')
+    } else {
+      toast(result.message || '同步失败', 'error')
+    }
+    accounts.value = await api.accounts()
+    await refreshBootstrap()
+    store.revision += 1
   } catch (error) {
     toast(error.message, 'error')
   }
@@ -237,7 +289,7 @@ async function copyDataDir() {
     <section class="section">
       <header class="section-head">
         <h3><AppIcon name="mail" :size="17" /> 邮箱账户</h3>
-        <p>QQ / 163 使用授权码，不需要登录密码。授权码只保存在本机。</p>
+        <p>QQ / 163 使用授权码，只读连接。授权码只保存在本机；解析与事件生成在 M2 接入。</p>
       </header>
       <div class="section-body">
         <div v-if="accounts.length">
@@ -246,12 +298,14 @@ async function copyDataDir() {
             <div class="account-info">
               <div class="account-email">{{ account.email }}</div>
               <div class="account-meta">
-                {{ accountProviderLabel(account.provider) }}
-                · {{ account.last_sync_at ? `上次同步 ${fmtDateTime(account.last_sync_at)}` : '尚未同步' }}
+                {{ accountProviderLabel(account.provider) }}，{{ account.message_count || 0 }} 封邮件，{{
+                  account.last_sync_at ? `上次同步 ${fmtDateTime(account.last_sync_at)}` : '尚未同步'
+                }}
               </div>
             </div>
             <span class="provider-tag">{{ accountProviderLabel(account.provider) }}</span>
             <button class="btn ghost sm" @click="testAccount(account)">测试</button>
+            <button class="btn ghost sm" @click="syncAccount(account)">同步</button>
             <button class="btn subtle sm" @click="removeAccount(account)">
               <AppIcon name="trash" :size="14" />
             </button>
@@ -288,11 +342,14 @@ async function copyDataDir() {
         </div>
 
         <div class="inline">
+          <button class="btn ghost" :disabled="testing" @click="testDraft">
+            {{ testing ? '连接中…' : '测试连接' }}
+          </button>
           <button class="btn primary" :disabled="adding" @click="addAccount">
             <AppIcon name="plus" :size="16" />
             {{ adding ? '添加中…' : '添加邮箱' }}
           </button>
-          <span class="muted" style="font-size: 11.5px">M0 只做账户记录，真实 IMAP 校验在 M1 接入。</span>
+          <span class="muted" style="font-size: 11.5px">添加前会测试 IMAP；只读拉取，不会标记已读。</span>
         </div>
       </div>
     </section>
@@ -436,9 +493,9 @@ async function copyDataDir() {
       <div class="section-body">
         <div class="summary-list">
           <div class="summary-row"><span>版本</span><strong>v{{ meta?.version }}</strong></div>
-          <div class="summary-row"><span>当前阶段</span><strong>M0 骨架（演示数据）</strong></div>
-          <div class="summary-row"><span>已支持邮箱</span><strong>QQ / 163（M1 接入真实 IMAP）</strong></div>
-          <div class="summary-row"><span>二期</span><strong>Outlook / Microsoft Graph</strong></div>
+          <div class="summary-row"><span>当前阶段</span><strong>M1 · 真实 IMAP 接入（只读）</strong></div>
+          <div class="summary-row"><span>已支持邮箱</span><strong>QQ / 163；Outlook 二期</strong></div>
+          <div class="summary-row"><span>下一步</span><strong>M2 · 中文秋招解析与事件生成</strong></div>
         </div>
         <p class="muted" style="font-size: 11.5px; line-height: 1.6; margin: 0">
           秋信（AutumnMail）是一个本地优先的秋招邮件助手。M0 目标是打通桌面壳、本地服务、SQLite 与完整 UI；

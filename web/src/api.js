@@ -58,8 +58,13 @@ export const api = {
     request(`/review/${id}`, { method: 'POST', body: payload }),
   accounts: () => request('/accounts'),
   addAccount: (payload) => request('/accounts', { method: 'POST', body: payload }),
+  testAccountDraft: (payload) =>
+    request('/accounts/test', { method: 'POST', body: payload }),
   deleteAccount: (id) => request(`/accounts/${id}`, { method: 'DELETE' }),
   testAccount: (id) => request(`/accounts/${id}/test`, { method: 'POST' }),
+  syncAccount: (id) => request(`/accounts/${id}/sync`, { method: 'POST' }),
+  messages: (params = {}) =>
+    request(`/messages?${new URLSearchParams(params).toString()}`),
   settings: () => request('/settings'),
   saveSettings: (payload) => request('/settings', { method: 'PUT', body: payload }),
   sync: () => request('/sync', { method: 'POST' }),

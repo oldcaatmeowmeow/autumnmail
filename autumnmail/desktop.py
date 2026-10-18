@@ -16,8 +16,10 @@ from pathlib import Path
 import uvicorn
 
 from . import __version__, paths
+from .core import scheduler
 from .security.token import new_token
 from .server import create_app
+from .store import repo
 
 _MUTEX_HANDLE = None
 
@@ -179,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0, help="固定端口（默认随机）")
     parser.add_argument("--data-dir", default=None, help="覆盖本地数据目录")
     parser.add_argument("--allow-multi", action="store_true", help="允许多实例运行")
+    parser.add_argument("--no-scheduler", action="store_true", help="不启动后台定时同步")
     args = parser.parse_args(argv)
 
     if args.data_dir:
@@ -207,6 +210,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"数据目录: {paths.data_dir()}", flush=True)
     print(f"访问地址: {url}", flush=True)
 
+    if not args.no_scheduler:
+        settings = repo.get_settings()
+        scheduler.start(settings["scan_interval_min"])
+
     try:
         if args.no_window:
             if args.open:
@@ -219,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        scheduler.stop()
         server.stop()
     return 0
 
