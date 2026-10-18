@@ -78,7 +78,7 @@ async function sync() {
         <div class="brand-mark"><AppIcon name="mail" :size="19" /></div>
         <div class="brand-text">
           <strong>秋信</strong>
-          <span>AUTUMNMAIL</span>
+          <span>AutumnMail</span>
         </div>
       </div>
 

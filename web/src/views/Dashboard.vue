@@ -42,6 +42,9 @@ const dateLabel = new Intl.DateTimeFormat('zh-CN', {
   weekday: 'long',
 }).format(new Date())
 
+const todayDay = String(new Date().getDate()).padStart(2, '0')
+const todayMonth = new Intl.DateTimeFormat('zh-CN', { month: 'long' }).format(new Date())
+
 const stats = computed(() => data.value?.stats || {})
 const today = computed(() => data.value?.today || [])
 const upcoming = computed(() => data.value?.upcoming || [])
@@ -56,24 +59,34 @@ function go(event) {
 <template>
   <div class="page">
     <section class="hero">
-      <div class="eyebrow">{{ dateLabel }}</div>
-      <h2>
-        {{ greeting }}，
-        <template v-if="today.length">今天有 <em>{{ today.length }}</em> 场面试</template>
-        <template v-else>今天没有面试安排</template>
-      </h2>
-      <p>
-        未来 7 天 {{ stats.upcoming_7d || 0 }} 个节点，
-        {{ stats.needs_reply || 0 }} 项需要你回复。
-        所有数据只保存在这台电脑上。
-      </p>
+      <div class="hero-date">
+        <span class="hero-day">{{ todayDay }}</span>
+        <span class="hero-month">{{ todayMonth }}</span>
+      </div>
+      <div class="hero-main">
+        <p class="hero-kicker">{{ dateLabel }}</p>
+        <h2>
+          <template v-if="today.length">{{ greeting }}，今天有 {{ today.length }} 场面试</template>
+          <template v-else>{{ greeting }}，今天没有面试安排</template>
+        </h2>
+        <p>
+          未来 7 天 {{ stats.upcoming_7d || 0 }} 个节点，
+          {{ stats.needs_reply || 0 }} 项需要你回复。数据只保存在这台电脑上。
+        </p>
+      </div>
+      <div v-if="upcoming.length" class="hero-next">
+        <span class="hero-next-label">下一个节点</span>
+        <strong>{{ upcoming[0].company }}</strong>
+        <span>{{ fmtDateTime(upcoming[0].event_time) }}</span>
+        <span>{{ upcoming[0].title || upcoming[0].category }}</span>
+      </div>
     </section>
 
-    <section class="stats-grid">
-      <StatCard label="7 天内面试/节点" :value="stats.upcoming_7d || 0" icon="calendar" tone="brand" hint="含面试、测评与笔试" />
-      <StatCard label="需要你处理" :value="stats.needs_reply || 0" icon="clock" tone="amber" hint="回复时间或确认安排" />
-      <StatCard label="本周新拒信" :value="stats.new_rejections_7d || 0" icon="alert" tone="rose" hint="过去 7 天" />
-      <StatCard label="进行中的机会" :value="stats.active_applications || 0" icon="briefcase" tone="green" hint="不含已拒绝/已结束" />
+    <section class="ledger">
+      <StatCard label="7 天内面试/节点" :value="stats.upcoming_7d || 0" tone="brand" hint="含面试、测评与笔试" />
+      <StatCard label="需要你处理" :value="stats.needs_reply || 0" tone="amber" hint="回复时间或确认安排" />
+      <StatCard label="本周新拒信" :value="stats.new_rejections_7d || 0" tone="rose" hint="过去 7 天" />
+      <StatCard label="进行中的机会" :value="stats.active_applications || 0" tone="green" hint="不含已拒绝/已结束" />
     </section>
 
     <div class="grid-2">
